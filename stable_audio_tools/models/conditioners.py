@@ -90,6 +90,49 @@ class NumberConditioner(Conditioner):
     
             return [float_embeds, torch.ones(float_embeds.shape[0], 1).to(device)]
 
+class VectorConditioner(Conditioner):
+    """
+    Conditioner that takes a list of vectors (floats) and projects them to the output dimension.
+    Useful for static spatial information like [azimuth, elevation, distance] or [x, y, z].
+    """
+    def __init__(self, 
+                 output_dim: int, 
+                 input_dim: int,
+                 hidden_dim: int = None,
+                 project_out: bool = False
+                 ):
+        super().__init__(input_dim, output_dim, project_out=project_out)
+        
+        self.input_dim = input_dim
+
+        if hidden_dim is not None:
+             self.mlp = nn.Sequential(
+                nn.Linear(input_dim, hidden_dim),
+                nn.SiLU(),
+                nn.Linear(hidden_dim, output_dim)
+            )
+        else:
+            self.mlp = nn.Linear(input_dim, output_dim)
+
+    def forward(self, vectors: tp.List[tp.List[float]], device=None) -> tp.Any:
+        # vectors is a list of lists/tuples, e.g. [[az1, el1, dst1], [az2, el2, dst2]]
+        vectors = torch.tensor(vectors).to(device) # [B, input_dim]
+        
+        # Cast to same type as mlp
+        dtype = next(self.mlp.parameters()).dtype
+        vectors = vectors.to(dtype)
+
+        embeds = self.mlp(vectors) # [B, output_dim]
+        embeds = embeds.unsqueeze(1) # [B, 1, output_dim]
+
+        if not isinstance(self.proj_out, nn.Identity):
+            proj_out_dtype = next(self.proj_out.parameters()).dtype
+            embeds = embeds.to(proj_out_dtype)
+            
+        embeds = self.proj_out(embeds)
+
+        return [embeds, torch.ones(embeds.shape[0], 1).to(device)]
+
 class ListConditioner(Conditioner):
     def __init__(self, 
                 output_dim: int,
@@ -721,6 +764,8 @@ def create_multi_conditioner_from_conditioning_config(config: tp.Dict[str, tp.An
             conditioners[id] = ListConditioner(**conditioner_config)
         elif conditioner_type == "phoneme":
             conditioners[id] = PhonemeConditioner(**conditioner_config)
+        elif conditioner_type == "vector":
+            conditioners[id] = VectorConditioner(**conditioner_config)
         elif conditioner_type == "lut":
             conditioners[id] = TokenizerLUTConditioner(**conditioner_config)
         elif conditioner_type == "pretransform":

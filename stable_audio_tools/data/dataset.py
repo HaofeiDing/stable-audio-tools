@@ -236,6 +236,16 @@ class SampleDataset(torch.utils.data.Dataset):
 
             info["load_time"] = end_time - start_time
 
+            # Load sidecar metadata (e.g. for spatial conditioning)
+            json_filename = os.path.splitext(audio_filename)[0] + ".json"
+            if os.path.exists(json_filename):
+                try:
+                    with open(json_filename, "r", encoding="utf-8") as f:
+                        sidecar_metadata = json.load(f)
+                        info.update(sidecar_metadata)
+                except Exception as eval_e:
+                    print(f"Warning: Could not load sidecar JSON {json_filename}: {eval_e}")
+
             for custom_md_path in self.custom_metadata_fns.keys():
                 if custom_md_path in audio_filename:
                     custom_metadata_fn = self.custom_metadata_fns[custom_md_path]
