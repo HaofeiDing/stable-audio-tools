@@ -752,7 +752,7 @@ class ContinuousTransformer(nn.Module):
         self.project_out = nn.Linear(dim, dim_out, bias=False) if dim_out is not None else nn.Identity()
 
         if rotary_pos_emb:
-            self.rotary_pos_emb = RotaryEmbedding(max(dim_heads // 2, 32))
+            self.rotary_pos_emb = RotaryEmbedding(max(dim_heads // 2, 32), interpolation_factor=kwargs.get("interpolation_factor", 1.0))
         else:
             self.rotary_pos_emb = None
 
