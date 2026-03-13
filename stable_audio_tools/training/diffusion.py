@@ -472,9 +472,16 @@ class DiffusionCondTrainingWrapper(pl.LightningModule):
             self.log_dict(debug_log_dict)
 
 
+        # Diagnostic metrics
+        scale = getattr(self.diffusion.pretransform, "scale", 1.0)
+        std_scaled = diffusion_input.std()
+
         log_dict = {
             'train/loss': loss.detach(),
-            'train/std_data': diffusion_input.std(),
+            'train/std_scaled': std_scaled,
+            'train/std_raw': std_scaled * scale,
+            'train/audio_peak': reals.abs().max(),
+            'train/latent_max': diffusion_input.abs().max(),
             'train/lr': self.trainer.optimizers[0].param_groups[0]['lr']
         }
 
