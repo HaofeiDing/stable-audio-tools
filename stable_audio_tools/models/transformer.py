@@ -12,8 +12,12 @@ from torch.nn.attention.flex_attention import flex_attention
 try:
     from flash_attn import flash_attn_func
 except ImportError as e:
-    print(e)
-    print('flash_attn not installed, disabling Flash Attention')
+    import os
+    # Only print once per process/run
+    if os.environ.get("FLASH_ATTN_WARNED") != "1":
+        print(e)
+        print('flash_attn not installed, disabling Flash Attention')
+        os.environ["FLASH_ATTN_WARNED"] = "1"
     flash_attn_kvpacked_func = None
     flash_attn_func = None
 
