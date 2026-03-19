@@ -480,9 +480,14 @@ class DiffusionCondTrainingWrapper(pl.LightningModule):
         else:
             stft_loss = torch.tensor(0.0).to(self.device)
 
-        # Add supervision losses to the diffusion objective. 
-        # (Weighting STFT at 0.1 to avoid exploding gradients overriding the vector field entirely)
-        loss = loss + 1.0 * latent_l1_loss + 0.1 * stft_loss
+        # --- x0 Supervision: Latent L1 & Waveform MR-STFT ---
+        # (Combined these into total_loss and ensured all components are logged separately)
+        # Weighting STFT at 0.1 to avoid exploding gradients overriding the vector field entirely
+        total_loss = loss + 1.0 * latent_l1_loss + 0.1 * stft_loss
+        
+        if "loss" in losses:
+            losses["diffusion_loss"] = losses.pop("loss") # Rename base MSE for clarity
+            
         losses["latent_l1_loss"] = latent_l1_loss
         losses["stft_loss"] = stft_loss
         # ----------------------------------------------------
@@ -516,7 +521,7 @@ class DiffusionCondTrainingWrapper(pl.LightningModule):
         std_scaled = diffusion_input.std()
 
         log_dict = {
-            'train/loss': loss.detach(),
+            'train/loss': total_loss.detach(),
             'train/std_scaled': std_scaled,
             'train/std_raw': std_scaled * scale,
             'train/audio_peak': reals.abs().max(),
@@ -530,7 +535,7 @@ class DiffusionCondTrainingWrapper(pl.LightningModule):
         self.log_dict(log_dict, prog_bar=True, on_step=True)
         p.tick("log")
         #print(f"Profiler: {p}")
-        return loss
+        return total_loss
 
     def on_before_zero_grad(self, *args, **kwargs):
         if self.diffusion_ema is not None:
