@@ -468,8 +468,9 @@ class DiffusionCondTrainingWrapper(pl.LightningModule):
             # decode expects the shape output, amp should be preserved
             audio_pred = self.diffusion.pretransform.decode(x0_pred)
             
-            # If pre_encoded is True, 'reals' is latent, we need to decode it to waveform for MR-STFT
-            audio_reals = self.diffusion.pretransform.decode(reals) if self.pre_encoded else reals
+            # If pre_encoded is True, 'reals' is the unscaled EAR-VAE latent from our dataloader.
+            # We decode it directly using the VAE model to avoid the Pretransform's internal scaling.
+            audio_reals = self.diffusion.pretransform.model.decode(reals) if self.pre_encoded else reals
 
             # Match lengths for MR-STFT Loss (addressing possible VAE padding/striding mismatch)
             min_length = min(audio_pred.shape[-1], audio_reals.shape[-1])
