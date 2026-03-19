@@ -468,12 +468,15 @@ class DiffusionCondTrainingWrapper(pl.LightningModule):
             # decode expects the shape output, amp should be preserved
             audio_pred = self.diffusion.pretransform.decode(x0_pred)
             
-            # Match lengths for MR-STFT Loss (addressing possible VAE padding/striding mismatch)
-            min_length = min(audio_pred.shape[-1], reals.shape[-1])
-            audio_pred = audio_pred[:, :, :min_length]
-            reals = reals[:, :, :min_length]
+            # If pre_encoded is True, 'reals' is latent, we need to decode it to waveform for MR-STFT
+            audio_reals = self.diffusion.pretransform.decode(reals) if self.pre_encoded else reals
 
-            stft_loss = self.mrstft(audio_pred.float(), reals.float())
+            # Match lengths for MR-STFT Loss (addressing possible VAE padding/striding mismatch)
+            min_length = min(audio_pred.shape[-1], audio_reals.shape[-1])
+            audio_pred = audio_pred[:, :, :min_length]
+            audio_reals = audio_reals[:, :, :min_length]
+
+            stft_loss = self.mrstft(audio_pred.float(), audio_reals.float())
         else:
             stft_loss = torch.tensor(0.0).to(self.device)
 
