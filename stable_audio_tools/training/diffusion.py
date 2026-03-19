@@ -476,6 +476,9 @@ class DiffusionCondTrainingWrapper(pl.LightningModule):
             audio_pred = audio_pred[:, :, :min_length]
             audio_reals = audio_reals[:, :, :min_length]
 
+            if self.global_rank == 0 and self.trainer.global_step % 100 == 0:
+                rank_zero_print(f"📊 [Step {self.trainer.global_step}] Loss Audio Ranges | REALS: Min={audio_reals.min():.4f}, Max={audio_reals.max():.4f} | PRED: Min={audio_pred.min():.4f}, Max={audio_pred.max():.4f}")
+
             stft_loss = self.mrstft(audio_pred.float(), audio_reals.float())
         else:
             stft_loss = torch.tensor(0.0).to(self.device)
