@@ -13,6 +13,10 @@ from torch import optim
 from torch.nn import functional as F
 from pytorch_lightning.utilities.rank_zero import rank_zero_only
 
+@rank_zero_only
+def rank_zero_print(*args, **kwargs):
+    print(*args, **kwargs)
+
 from ..interface.aeiou import pca_point_cloud, audio_spectrogram_image, tokens_spectrogram_image
 from ..inference.sampling import get_alphas_sigmas, sample, sample_discrete_euler, sample_flow_pingpong, truncated_logistic_normal_rescaled, DistributionShift, sample_timesteps_logsnr
 from ..models.diffusion import DiffusionModelWrapper, ConditionedDiffusionModelWrapper
