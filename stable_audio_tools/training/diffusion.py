@@ -280,6 +280,9 @@ class DiffusionCondTrainingWrapper(pl.LightningModule):
 
         self.log_loss_info = log_loss_info
 
+        import auraloss
+        self.mrstft = auraloss.freq.MultiResolutionSTFTLoss()
+
         assert lr is not None or optimizer_configs is not None, "Must specify either lr or optimizer_configs in training config"
 
         if optimizer_configs is None:
@@ -447,6 +450,33 @@ class DiffusionCondTrainingWrapper(pl.LightningModule):
         })
 
         loss, losses = self.losses(loss_info)
+
+        # --- x0 Supervision: Latent L1 & Waveform MR-STFT ---
+        t_expand = t[:, None, None]
+        if self.diffusion_objective == "v":
+            x0_pred = alphas * noised_inputs - sigmas * output
+        elif self.diffusion_objective in ["rectified_flow", "rf_denoiser"]:
+            x0_pred = noised_inputs - t_expand * output
+        else:
+            x0_pred = output
+
+        latent_l1_loss = F.l1_loss(x0_pred, diffusion_input)
+        
+        # Decode x0_pred to audio for STFT Loss
+        if self.diffusion.pretransform is not None:
+            self.mrstft = self.mrstft.to(self.device)
+            # decode expects the shape output, amp should be preserved
+            audio_pred = self.diffusion.pretransform.decode(x0_pred)
+            stft_loss = self.mrstft(audio_pred.float(), reals.float())
+        else:
+            stft_loss = torch.tensor(0.0).to(self.device)
+
+        # Add supervision losses to the diffusion objective. 
+        # (Weighting STFT at 0.1 to avoid exploding gradients overriding the vector field entirely)
+        loss = loss + 1.0 * latent_l1_loss + 0.1 * stft_loss
+        losses["latent_l1_loss"] = latent_l1_loss
+        losses["stft_loss"] = stft_loss
+        # ----------------------------------------------------
 
         p.tick("loss")
 
