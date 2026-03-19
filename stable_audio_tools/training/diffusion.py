@@ -537,7 +537,7 @@ class DiffusionCondTrainingWrapper(pl.LightningModule):
             'train/loss': total_loss.detach(),
             'train/std_scaled': std_scaled,
             'train/std_raw': std_scaled * scale,
-            'train/audio_peak': reals.abs().max(),
+            'train/audio_peak': audio_reals.abs().max() if self.pre_encoded else reals.abs().max(),
             'train/latent_max': diffusion_input.abs().max(),
             'train/lr': self.trainer.optimizers[0].param_groups[0]['lr']
         }
