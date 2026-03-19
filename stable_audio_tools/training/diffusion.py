@@ -230,11 +230,16 @@ class DiffusionCondTrainingWrapper(pl.LightningModule):
             timestep_sampler_options: tp.Optional[tp.Dict[str, tp.Any]] = None,
             validation_timesteps = [0.1, 0.3, 0.5, 0.7, 0.9],
             p_one_shot: float = 0.0,
-            inpainting_config: dict = None
+            inpainting_config: tp.Optional[tp.Dict[str, tp.Any]] = None,
+            latent_l1_weight: float = 1.0,
+            stft_loss_weight: float = 0.1
     ):
         super().__init__()
 
         self.diffusion = model
+
+        self.latent_l1_weight = latent_l1_weight
+        self.stft_loss_weight = stft_loss_weight
 
         if use_ema:
             self.diffusion_ema = EMA(
@@ -487,7 +492,7 @@ class DiffusionCondTrainingWrapper(pl.LightningModule):
         # --- x0 Supervision: Latent L1 & Waveform MR-STFT ---
         # (Combined these into total_loss and ensured all components are logged separately)
         # Weighting STFT at 0.1 to avoid exploding gradients overriding the vector field entirely
-        total_loss = loss + 1.0 * latent_l1_loss + 0.1 * stft_loss
+        total_loss = loss + self.latent_l1_weight * latent_l1_loss + self.stft_loss_weight * stft_loss
         
         if "loss" in losses:
             losses["diffusion_loss"] = losses.pop("loss") # Rename base MSE for clarity
