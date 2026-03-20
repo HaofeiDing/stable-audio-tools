@@ -533,6 +533,8 @@ class DiffusionCondTrainingWrapper(pl.LightningModule):
         std_scaled = diffusion_input.std()
 
         log_dict = {
+            'step': float(self.global_step),
+            'epoch': float(self.current_epoch),
             'train/loss': total_loss.detach(),
             'train/std_scaled': std_scaled,
             'train/std_raw': std_scaled * scale,
