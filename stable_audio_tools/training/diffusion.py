@@ -536,10 +536,16 @@ class DiffusionCondTrainingWrapper(pl.LightningModule):
             'train/loss': total_loss.detach(),
             'train/std_scaled': std_scaled,
             'train/std_raw': std_scaled * scale,
-            'train/audio_peak': audio_reals.abs().max() if self.pre_encoded else reals.abs().max(),
             'train/latent_max': diffusion_input.abs().max(),
             'train/lr': self.trainer.optimizers[0].param_groups[0]['lr']
         }
+
+        # Safe peak logging: only include audio_peak if we have the audio data
+        if self.pre_encoded:
+            if self.stft_loss_weight > 0 and 'audio_reals' in locals():
+                log_dict['train/audio_peak'] = audio_reals.abs().max()
+        else:
+            log_dict['train/audio_peak'] = reals.abs().max()
 
         for loss_name, loss_value in losses.items():
             log_dict[f"train/{loss_name}"] = loss_value.detach()
