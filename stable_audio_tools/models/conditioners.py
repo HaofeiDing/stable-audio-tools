@@ -133,6 +133,21 @@ class VectorConditioner(Conditioner):
 
         return [embeds, torch.ones(embeds.shape[0], 1).to(device)]
 
+class TensorConditioner(Conditioner):
+    """
+    Passthrough conditioner for pre-computed tensor data (e.g. trajectories).
+    Takes a list of tensors/lists and stacks them into a batch tensor.
+    Used with input_concat_ids for channel-wise concatenation to latent input.
+    """
+    def __init__(self, output_dim: int, project_out: bool = False):
+        super().__init__(output_dim, output_dim, project_out=project_out)
+
+    def forward(self, tensors, device=None) -> tp.Any:
+        # tensors is a list of lists/tensors, e.g. each is [3, T]
+        batch = torch.tensor(tensors, dtype=torch.float32).to(device)
+        # batch shape: [B, channels, T]
+        return [batch, None]
+
 class ListConditioner(Conditioner):
     def __init__(self, 
                 output_dim: int,
@@ -766,6 +781,8 @@ def create_multi_conditioner_from_conditioning_config(config: tp.Dict[str, tp.An
             conditioners[id] = PhonemeConditioner(**conditioner_config)
         elif conditioner_type == "vector":
             conditioners[id] = VectorConditioner(**conditioner_config)
+        elif conditioner_type == "tensor":
+            conditioners[id] = TensorConditioner(**conditioner_config)
         elif conditioner_type == "lut":
             conditioners[id] = TokenizerLUTConditioner(**conditioner_config)
         elif conditioner_type == "pretransform":
