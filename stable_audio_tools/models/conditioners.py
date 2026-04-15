@@ -135,18 +135,23 @@ class VectorConditioner(Conditioner):
 
 class TensorConditioner(Conditioner):
     """
-    Passthrough conditioner for pre-computed tensor data (e.g. trajectories).
-    Takes a list of tensors/lists and stacks them into a batch tensor.
-    Used with input_concat_ids for channel-wise concatenation to latent input.
+    Conditioner for trajectory data. Projects [B, C, T] tensor to [B, T, output_dim]
+    for use as cross-attention conditioning tokens.
     """
-    def __init__(self, output_dim: int, project_out: bool = False):
+    def __init__(self, output_dim: int, input_dim: int = 3, project_out: bool = False):
         super().__init__(output_dim, output_dim, project_out=project_out)
+        self.input_proj = nn.Linear(input_dim, output_dim)
 
     def forward(self, tensors, device=None) -> tp.Any:
-        # tensors is a list of lists/tensors, e.g. each is [3, T]
+        # tensors is a list of lists, each [C, T] e.g. [3, 80]
         batch = torch.tensor(tensors, dtype=torch.float32).to(device)
-        # batch shape: [B, channels, T]
-        return [batch, None]
+        # batch: [B, C, T] → permute to [B, T, C]
+        batch = batch.permute(0, 2, 1)
+        # Project C → output_dim: [B, T, output_dim]
+        batch = self.input_proj(batch)
+        # Mask: all ones (all timesteps valid)
+        mask = torch.ones(batch.shape[0], batch.shape[1]).to(device)
+        return [batch, mask]
 
 class ListConditioner(Conditioner):
     def __init__(self, 
