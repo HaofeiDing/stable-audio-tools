@@ -140,7 +140,13 @@ class TensorConditioner(Conditioner):
     """
     def __init__(self, output_dim: int, input_dim: int = 3, project_out: bool = False):
         super().__init__(output_dim, output_dim, project_out=project_out)
-        self.input_proj = nn.Linear(input_dim, output_dim)
+        self.input_proj = nn.Sequential(
+            nn.Linear(input_dim, 256),
+            nn.SiLU(),
+            nn.Linear(256, output_dim)
+        )
+        from .transformer import ScaledSinusoidalEmbedding
+        self.pos_emb = ScaledSinusoidalEmbedding(output_dim)
 
     def forward(self, tensors, device=None) -> tp.Any:
         # tensors is a list of lists, each [C, T] e.g. [3, 80]
@@ -149,6 +155,10 @@ class TensorConditioner(Conditioner):
         batch = batch.permute(0, 2, 1)
         # Project C → output_dim: [B, T, output_dim]
         batch = self.input_proj(batch)
+        
+        # Inject Temporal Positional Encoding
+        batch = batch + self.pos_emb(batch)
+        
         # Mask: all ones (all timesteps valid)
         mask = torch.ones(batch.shape[0], batch.shape[1]).to(device)
         return [batch, mask]
