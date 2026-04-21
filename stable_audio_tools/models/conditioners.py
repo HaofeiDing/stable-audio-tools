@@ -181,8 +181,10 @@ class MultiTrackSpatialConditioner(Conditioner):
         # For simplicity, if passed as list of [Tracks, SeqLen, TrajDim]
         batch = torch.tensor(trajectories, dtype=torch.float32).to(device)
         
-        # [NEW] Permute from (B, K, 3, L) to (B, K, L, 3) to align with DiT's linear input projection
-        batch = batch.permute(0, 1, 3, 2)
+        # [NEW] Robust Dimension Alignment
+        # We need [Batch, Tracks, SeqLen, 3]. If we got [B, K, 3, L], permute it.
+        if batch.shape[-1] != 3 and batch.shape[-2] == 3:
+            batch = batch.permute(0, 1, 3, 2)
         
         # Project to target dimension
         projected = self.traj_proj(batch)
