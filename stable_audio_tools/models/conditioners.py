@@ -181,21 +181,15 @@ class MultiTrackSpatialConditioner(Conditioner):
         # For simplicity, if passed as list of [Tracks, SeqLen, TrajDim]
         batch = torch.tensor(trajectories, dtype=torch.float32).to(device)
         
+        # [NEW] Permute from (B, K, 3, L) to (B, K, L, 3) to align with DiT's linear input projection
+        batch = batch.permute(0, 1, 3, 2)
+        
         # Project to target dimension
         projected = self.traj_proj(batch)
         
         # We need to return [tensor, mask]
-        # In multi-track spatial, we'll pack it exactly as expected by dit.py's kwargs
         # Since this conditioner is inherently special, we return a fully active mask
-        # We assume sequence length is the the 3rd dimension: projected.shape[2]
-        # flattened tracking for mask if needed, but dit will intercept it anyway.
-        # However, to be compatible with default Conditioner unpacking:
-        # We'll just return the original structure and handle the reshapes in DiT.
-        
-        # Provide a dummy mask of 1s representing sequence components
-        # Actually DiffusionModelWrapper flattens cross_attn_conds, but
-        # since we intercept `spatial_trajectories` manually, we can pass it as-is.
-        
+        # The mask length should be Tracks * SeqLen
         mask = torch.ones(batch.shape[0], batch.shape[1] * batch.shape[2]).to(device)
         return [projected, mask]
 
