@@ -143,10 +143,11 @@ class DiffusionTransformer(nn.Module):
         return_info=False,
         exit_layer_ix=None,
         **kwargs):
-
-        spatial_trajectories = kwargs.pop("spatial_trajectories", None)
-        track_times = kwargs.pop("track_times", None)
-        cross_attn_bias = None
+        
+        # [NEW] Extract Spatial Parameters from Keywords
+        spatial_trajectories = kwargs.get("spatial_trajectories")
+        track_times = kwargs.get("track_times")
+        
         _tsm_info = None
 
         if cross_attn_cond is not None:
@@ -154,9 +155,11 @@ class DiffusionTransformer(nn.Module):
             # Convert text semantics to 1536 implicitly expected by Transformer
             cross_attn_cond = self.to_cond_embed(cross_attn_cond) # [B, K_text*L_text, 1536]
             
-            # Assume constant L_text per track based on standard T5 sequence length
+            # [NEW] Robust Track Detection
+            K_len_text = cross_attn_cond.shape[1]
             L_text = 128
-            K_text = cross_attn_cond.shape[1] // L_text
+            # K_text calculation should account for potential prepended/extra tokens
+            K_text = (K_len_text + L_text - 1) // L_text
             
             if spatial_trajectories is not None:
                 if spatial_trajectories.dim() == 3:
@@ -330,7 +333,8 @@ class DiffusionTransformer(nn.Module):
             audio_len = 8.0 # Standard Phase2 sample duration
             
             # 1. Text Masking: Windowed/All-Pass Blocks
-            tsm_mask_text = torch.zeros(x.shape[0], T_audio, K_text * L_text, device=device, dtype=dtype)
+            K_len_text = _tsm_info.get("K_len_text", K_text * L_text)
+            tsm_mask_text = torch.zeros(x.shape[0], T_audio, K_len_text, device=device, dtype=dtype)
             for b_idx in range(x.shape[0]):
                 for k in range(K_text):
                     mask_k = torch.ones(T_audio, L_text, device=device, dtype=dtype) * float('-inf')
@@ -363,7 +367,11 @@ class DiffusionTransformer(nn.Module):
                     else:
                         mask_k[:, :] = 0.0 # No bounds provided implies all-pass
                     
-                    tsm_mask_text[b_idx, :, k*L_text:(k+1)*L_text] = mask_k
+                    # Slice into the actual text mask, handling tail truncation
+                    c_start = k * L_text
+                    c_end = min(K_len_text, (k+1) * L_text)
+                    if c_start < K_len_text:
+                        tsm_mask_text[b_idx, :, c_start:c_end] = mask_k[:, :c_end-c_start]
             
             # 2. Trajectory Masking: Strict 1:1 active-diagonal mapping (identity)
             tsm_mask_traj = torch.zeros(x.shape[0], T_audio, K_traj * T_audio, device=device, dtype=dtype)
@@ -425,6 +433,10 @@ class DiffusionTransformer(nn.Module):
                 full_mask = torch.cat([pad_mask, full_mask], dim=1) # [B, T_q, K_len]
             
             cross_attn_bias = full_mask.unsqueeze(1) # [B, 1, T_q, K_len]
+        
+        # [NEW] Add K_len_text to _tsm_info for mask consistency
+        if _tsm_info is not None:
+             _tsm_info["K_len_text"] = K_len_text
 
         if self.transformer_type == "continuous_transformer":
             # Masks not currently implemented for continuous transformer
