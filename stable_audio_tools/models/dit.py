@@ -417,7 +417,7 @@ class DiffusionTransformer(nn.Module):
                     tsm_mask_traj[b_idx, :, k*T_audio:(k+1)*T_audio] = mask_k_track_inf
             
             # 3. Concatenate Masks
-            full_mask = torch.cat([tsm_mask_text, tsm_mask_traj_inf], dim=-1) # [B, T_audio, K_len]
+            full_mask = torch.cat([tsm_mask_text, tsm_mask_traj], dim=-1) # [B, T_audio, K_len]
             
             # 4. Pad for Prepend and Memory Tokens
             if T_q > T_audio:
