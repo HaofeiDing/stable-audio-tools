@@ -207,27 +207,30 @@ class ConditionedDiffusionModelWrapper(nn.Module):
             }
             if "spatial_trajectories" in conditioning_tensors:
                 res["negative_spatial_trajectories"] = conditioning_tensors["spatial_trajectories"][0]
-            res = {
-                "cross_attn_cond": cross_attention_input,
-                "cross_attn_mask": cross_attention_masks,
-                "global_cond": global_cond,
-                "input_concat_cond": input_concat_cond,
-                "prepend_cond": prepend_cond,
-                "prepend_cond_mask": prepend_cond_mask
-            }
             
-            # [NEW] Dynamic kwargs injection preventing disconnected pipes
-            for kwarg_id in self.custom_kwargs_ids:
-                if kwarg_id in conditioning_tensors:
-                    res[kwarg_id] = conditioning_tensors[kwarg_id][0]
-                    
-            # Fallback for previous rigid code mappings just in case
-            if "spatial_trajectories" in conditioning_tensors and "spatial_trajectories" not in self.custom_kwargs_ids:
-                res["spatial_trajectories"] = conditioning_tensors["spatial_trajectories"][0]
-            if "track_times" in conditioning_tensors and "track_times" not in self.custom_kwargs_ids:
-                res["track_times"] = conditioning_tensors["track_times"][0]
-
             return res
+
+        res = {
+            "cross_attn_cond": cross_attention_input,
+            "cross_attn_mask": cross_attention_masks,
+            "global_cond": global_cond,
+            "input_concat_cond": input_concat_cond,
+            "prepend_cond": prepend_cond,
+            "prepend_cond_mask": prepend_cond_mask
+        }
+        
+        # [NEW] Dynamic kwargs injection preventing disconnected pipes
+        for kwarg_id in self.custom_kwargs_ids:
+            if kwarg_id in conditioning_tensors:
+                res[kwarg_id] = conditioning_tensors[kwarg_id][0]
+                
+        # Fallback for previous rigid code mappings just in case
+        if "spatial_trajectories" in conditioning_tensors and "spatial_trajectories" not in self.custom_kwargs_ids:
+            res["spatial_trajectories"] = conditioning_tensors["spatial_trajectories"][0]
+        if "track_times" in conditioning_tensors and "track_times" not in self.custom_kwargs_ids:
+            res["track_times"] = conditioning_tensors["track_times"][0]
+
+        return res
 
     def forward(self, x: torch.Tensor, t: torch.Tensor, cond: tp.Dict[str, tp.Any], **kwargs):
         return self.model(x, t, **self.get_conditioning_inputs(cond), **kwargs)
