@@ -407,7 +407,7 @@ class Attention(nn.Module):
         return q, k
 
 
-    def apply_attn(self, q, k, v, causal = None, flex_attention_block_mask = None, flex_attention_score_mod = None, flash_attn_sliding_window = None):
+    def apply_attn(self, q, k, v, causal = None, flex_attention_block_mask = None, flex_attention_score_mod = None, flash_attn_sliding_window = None, cross_attn_bias = None):
 
         if self.num_heads != self.kv_heads:
              # Repeat interleave kv_heads to match q_heads for grouped query attention
@@ -430,7 +430,7 @@ class Attention(nn.Module):
             out = flex_attention_compiled(q,k,v,
                 block_mask = flex_attention_block_mask,
                 score_mod = flex_attention_score_mod)        
-        elif flash_attn_available:
+        elif flash_attn_available and cross_attn_bias is None:
             fa_dtype_in = q.dtype
             q, k, v = map(lambda t: rearrange(t, 'b h n d -> b n h d'), (q, k, v))
 
@@ -441,7 +441,7 @@ class Attention(nn.Module):
             
             out = rearrange(out.to(fa_dtype_in), 'b n h d -> b h n d')
         else:
-            out = F.scaled_dot_product_attention(q, k, v, is_causal = causal)
+            out = F.scaled_dot_product_attention(q, k, v, attn_mask=cross_attn_bias, is_causal = causal)
         return out
 
 
@@ -454,7 +454,8 @@ class Attention(nn.Module):
         causal = None, 
         flex_attention_block_mask = None,
         flex_attention_score_mod = None,
-        flash_attn_sliding_window = None
+        flash_attn_sliding_window = None,
+        cross_attn_bias = None
     ):
         h, kv_h, has_context = self.num_heads, self.kv_heads, context is not None
 
@@ -520,11 +521,11 @@ class Attention(nn.Module):
         if self.differential:
             q, q_diff = q.unbind(dim = 1)
             k, k_diff = k.unbind(dim = 1)
-            out = self.apply_attn(q, k, v,  causal = causal, flex_attention_block_mask = flex_attention_block_mask, flex_attention_score_mod = flex_attention_score_mod, flash_attn_sliding_window = flash_attn_sliding_window)
-            out_diff = self.apply_attn(q_diff, k_diff, v, causal = causal, flex_attention_block_mask = flex_attention_block_mask, flex_attention_score_mod = flex_attention_score_mod, flash_attn_sliding_window = flash_attn_sliding_window)
+            out = self.apply_attn(q, k, v,  causal = causal, flex_attention_block_mask = flex_attention_block_mask, flex_attention_score_mod = flex_attention_score_mod, flash_attn_sliding_window = flash_attn_sliding_window, cross_attn_bias=cross_attn_bias)
+            out_diff = self.apply_attn(q_diff, k_diff, v, causal = causal, flex_attention_block_mask = flex_attention_block_mask, flex_attention_score_mod = flex_attention_score_mod, flash_attn_sliding_window = flash_attn_sliding_window, cross_attn_bias=cross_attn_bias)
             out = out - out_diff
         else:
-            out = self.apply_attn(q, k, v, causal = causal, flex_attention_block_mask = flex_attention_block_mask, flex_attention_score_mod = flex_attention_score_mod, flash_attn_sliding_window = flash_attn_sliding_window)
+            out = self.apply_attn(q, k, v, causal = causal, flex_attention_block_mask = flex_attention_block_mask, flex_attention_score_mod = flex_attention_score_mod, flash_attn_sliding_window = flash_attn_sliding_window, cross_attn_bias=cross_attn_bias)
 
         # merge heads
         out = rearrange(out, ' b h n d -> b n (h d)')
@@ -671,7 +672,8 @@ class TransformerBlock(nn.Module):
         cross_attention_block_mask = None,
         cross_attention_score_mod = None,
         self_attention_flash_sliding_window = None,
-        cross_attention_flash_sliding_window = None
+        cross_attention_flash_sliding_window = None,
+        cross_attn_bias = None
     ):
         if rotary_pos_emb is None and self.add_rope:
             rotary_pos_emb = self.rope.forward_from_seq_len(x.shape[-2])
@@ -690,7 +692,7 @@ class TransformerBlock(nn.Module):
             x = x + residual
 
             if context is not None and self.cross_attend:
-                x = x + self.cross_attn_scale(self.cross_attn(self.cross_attend_norm(x), context = context, flex_attention_block_mask = cross_attention_block_mask, flex_attention_score_mod = cross_attention_score_mod, flash_attn_sliding_window = cross_attention_flash_sliding_window))
+                x = x + self.cross_attn_scale(self.cross_attn(self.cross_attend_norm(x), context = context, flex_attention_block_mask = cross_attention_block_mask, flex_attention_score_mod = cross_attention_score_mod, flash_attn_sliding_window = cross_attention_flash_sliding_window, cross_attn_bias=cross_attn_bias))
             
             if self.conformer is not None:
                 x = x + self.conformer_scale(self.conformer(x))
@@ -708,7 +710,7 @@ class TransformerBlock(nn.Module):
             x = x + self.self_attn_scale(self.self_attn(self.pre_norm(x), rotary_pos_emb = rotary_pos_emb, flex_attention_block_mask = self_attention_block_mask, flex_attention_score_mod = self_attention_score_mod, flash_attn_sliding_window = self_attention_flash_sliding_window))
 
             if context is not None and self.cross_attend:
-                x = x + self.cross_attn_scale(self.cross_attn(self.cross_attend_norm(x), context = context, flex_attention_block_mask = cross_attention_block_mask, flex_attention_score_mod = cross_attention_score_mod, flash_attn_sliding_window = cross_attention_flash_sliding_window))
+                x = x + self.cross_attn_scale(self.cross_attn(self.cross_attend_norm(x), context = context, flex_attention_block_mask = cross_attention_block_mask, flex_attention_score_mod = cross_attention_score_mod, flash_attn_sliding_window = cross_attention_flash_sliding_window, cross_attn_bias=cross_attn_bias))
                     
             if self.conformer is not None:
                 x = x + self.conformer_scale(self.conformer(x))
@@ -806,6 +808,7 @@ class ContinuousTransformer(nn.Module):
         return_info = False,
         use_checkpointing = True,
         exit_layer_ix = None,
+        cross_attn_bias = None,
         **kwargs
     ):
         batch, seq, device = *x.shape[:2], x.device
@@ -845,9 +848,9 @@ class ContinuousTransformer(nn.Module):
         for layer_ix, layer in enumerate(self.layers):
 
             if use_checkpointing:
-                x = checkpoint(layer, x, rotary_pos_emb = rotary_pos_emb, global_cond=global_cond, self_attention_flash_sliding_window = self.sliding_window, **kwargs)
+                x = checkpoint(layer, x, rotary_pos_emb = rotary_pos_emb, global_cond=global_cond, self_attention_flash_sliding_window = self.sliding_window, cross_attn_bias=cross_attn_bias, **kwargs)
             else:
-                x = layer(x, rotary_pos_emb = rotary_pos_emb, global_cond=global_cond, self_attention_flash_sliding_window = self.sliding_window, **kwargs)
+                x = layer(x, rotary_pos_emb = rotary_pos_emb, global_cond=global_cond, self_attention_flash_sliding_window = self.sliding_window, cross_attn_bias=cross_attn_bias, **kwargs)
 
             if return_info:
                 info["hidden_states"].append(x)
