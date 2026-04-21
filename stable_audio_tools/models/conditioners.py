@@ -163,6 +163,42 @@ class TensorConditioner(Conditioner):
         mask = torch.ones(batch.shape[0], batch.shape[1]).to(device)
         return [batch, mask]
 
+class MultiTrackSpatialConditioner(Conditioner):
+    """
+    Conditioner that maps multi-track physical trajectories to the semantic
+    latent space for spatial binding.
+    """
+    def __init__(self, output_dim: int, traj_dim: int = 1, num_tracks: int = 2):
+        super().__init__(output_dim, output_dim)
+        self.traj_dim = traj_dim
+        self.num_tracks = num_tracks
+        
+        # Pass RAW Physics tokens to active slicing mechanism in DiT
+        self.traj_proj = nn.Identity()
+
+    def forward(self, trajectories: tp.Any, device=None) -> tp.Any:
+        # trajectories shape expectation: list of tensors or tensor of [Batch, Tracks, SeqLen, TrajDim]
+        # For simplicity, if passed as list of [Tracks, SeqLen, TrajDim]
+        batch = torch.tensor(trajectories, dtype=torch.float32).to(device)
+        
+        # Project to target dimension
+        projected = self.traj_proj(batch)
+        
+        # We need to return [tensor, mask]
+        # In multi-track spatial, we'll pack it exactly as expected by dit.py's kwargs
+        # Since this conditioner is inherently special, we return a fully active mask
+        # We assume sequence length is the the 3rd dimension: projected.shape[2]
+        # flattened tracking for mask if needed, but dit will intercept it anyway.
+        # However, to be compatible with default Conditioner unpacking:
+        # We'll just return the original structure and handle the reshapes in DiT.
+        
+        # Provide a dummy mask of 1s representing sequence components
+        # Actually DiffusionModelWrapper flattens cross_attn_conds, but
+        # since we intercept `spatial_trajectories` manually, we can pass it as-is.
+        
+        mask = torch.ones(batch.shape[0], batch.shape[1] * batch.shape[2]).to(device)
+        return [projected, mask]
+
 class ListConditioner(Conditioner):
     def __init__(self, 
                 output_dim: int,
@@ -414,13 +450,22 @@ class T5Conditioner(Conditioner):
             self.__dict__["model"] = model
 
 
-    def forward(self, texts: tp.List[str], device: tp.Union[torch.device, str]) -> tp.Tuple[torch.Tensor, torch.Tensor]:
+    def forward(self, texts: tp.List[tp.Union[str, tp.List[str]]], device: tp.Union[torch.device, str]) -> tp.Tuple[torch.Tensor, torch.Tensor]:
         
         self.model.to(device)
         self.proj_out.to(device)
 
+        # [NEW] Multi-Track Unrolling Logic
+        is_multi_track = isinstance(texts[0], (list, tuple))
+        if is_multi_track:
+            B_orig = len(texts)
+            K_orig = len(texts[0])
+            flat_texts = [track_text for batch_elem in texts for track_text in batch_elem]
+        else:
+            flat_texts = texts
+
         encoded = self.tokenizer(
-            texts,
+            flat_texts,
             truncation=True,
             max_length=self.max_length,
             padding="max_length",
@@ -445,6 +490,13 @@ class T5Conditioner(Conditioner):
         embeddings = self.proj_out(embeddings)
 
         embeddings = embeddings * attention_mask.unsqueeze(-1).float()
+
+        # [NEW] Multi-Track Reshaping Logic [B*K, L, D] -> [B, K*L, D]
+        if is_multi_track:
+            L_len = embeddings.shape[1]
+            D_len = embeddings.shape[2]
+            embeddings = embeddings.view(B_orig, K_orig * L_len, D_len)
+            attention_mask = attention_mask.view(B_orig, K_orig * L_len)
 
         return embeddings, attention_mask
     
@@ -798,6 +850,8 @@ def create_multi_conditioner_from_conditioning_config(config: tp.Dict[str, tp.An
             conditioners[id] = VectorConditioner(**conditioner_config)
         elif conditioner_type == "tensor":
             conditioners[id] = TensorConditioner(**conditioner_config)
+        elif conditioner_type == "multi_track_spatial":
+            conditioners[id] = MultiTrackSpatialConditioner(**conditioner_config)
         elif conditioner_type == "lut":
             conditioners[id] = TokenizerLUTConditioner(**conditioner_config)
         elif conditioner_type == "pretransform":

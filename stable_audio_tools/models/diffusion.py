@@ -115,6 +115,7 @@ class ConditionedDiffusionModelWrapper(nn.Module):
             global_cond_ids: tp.List[str] = [],
             input_concat_ids: tp.List[str] = [],
             prepend_cond_ids: tp.List[str] = [],
+            custom_kwargs_ids: tp.List[str] = [],
             ):
         super().__init__()
 
@@ -128,6 +129,7 @@ class ConditionedDiffusionModelWrapper(nn.Module):
         self.global_cond_ids = global_cond_ids
         self.input_concat_ids = input_concat_ids
         self.prepend_cond_ids = prepend_cond_ids
+        self.custom_kwargs_ids = custom_kwargs_ids
         self.min_input_length = min_input_length
 
         self.dist_shift = None
@@ -197,14 +199,15 @@ class ConditionedDiffusionModelWrapper(nn.Module):
             prepend_cond_mask = torch.cat(prepend_cond_masks, dim=1)
 
         if negative:
-            return {
+            res = {
                 "negative_cross_attn_cond": cross_attention_input,
                 "negative_cross_attn_mask": cross_attention_masks,
                 "negative_global_cond": global_cond,
                 "negative_input_concat_cond": input_concat_cond
             }
-        else:
-            return {
+            if "spatial_trajectories" in conditioning_tensors:
+                res["negative_spatial_trajectories"] = conditioning_tensors["spatial_trajectories"][0]
+            res = {
                 "cross_attn_cond": cross_attention_input,
                 "cross_attn_mask": cross_attention_masks,
                 "global_cond": global_cond,
@@ -212,6 +215,19 @@ class ConditionedDiffusionModelWrapper(nn.Module):
                 "prepend_cond": prepend_cond,
                 "prepend_cond_mask": prepend_cond_mask
             }
+            
+            # [NEW] Dynamic kwargs injection preventing disconnected pipes
+            for kwarg_id in self.custom_kwargs_ids:
+                if kwarg_id in conditioning_tensors:
+                    res[kwarg_id] = conditioning_tensors[kwarg_id][0]
+                    
+            # Fallback for previous rigid code mappings just in case
+            if "spatial_trajectories" in conditioning_tensors and "spatial_trajectories" not in self.custom_kwargs_ids:
+                res["spatial_trajectories"] = conditioning_tensors["spatial_trajectories"][0]
+            if "track_times" in conditioning_tensors and "track_times" not in self.custom_kwargs_ids:
+                res["track_times"] = conditioning_tensors["track_times"][0]
+
+            return res
 
     def forward(self, x: torch.Tensor, t: torch.Tensor, cond: tp.Dict[str, tp.Any], **kwargs):
         return self.model(x, t, **self.get_conditioning_inputs(cond), **kwargs)
@@ -661,6 +677,7 @@ def create_diffusion_cond_from_config(config: tp.Dict[str, tp.Any]):
     global_cond_ids = diffusion_config.get('global_cond_ids', [])
     input_concat_ids = diffusion_config.get('input_concat_ids', [])
     prepend_cond_ids = diffusion_config.get('prepend_cond_ids', [])
+    custom_kwargs_ids = diffusion_config.get('custom_kwargs_ids', [])
 
     pretransform = model_config.get("pretransform", None)
 
@@ -701,6 +718,7 @@ def create_diffusion_cond_from_config(config: tp.Dict[str, tp.Any]):
         global_cond_ids=global_cond_ids,
         input_concat_ids=input_concat_ids,
         prepend_cond_ids=prepend_cond_ids,
+        custom_kwargs_ids=custom_kwargs_ids,
         pretransform=pretransform,
         io_channels=io_channels,
         distribution_shift_options=distribution_shift_options,
