@@ -145,8 +145,8 @@ class DiffusionTransformer(nn.Module):
         **kwargs):
         
         # [NEW] Extract Spatial Parameters from Keywords
-        spatial_trajectories = kwargs.get("spatial_trajectories")
-        track_times = kwargs.get("track_times")
+        spatial_trajectories = kwargs.pop("spatial_trajectories", None)
+        track_times = kwargs.pop("track_times", None)
         
         _tsm_info = None
 
