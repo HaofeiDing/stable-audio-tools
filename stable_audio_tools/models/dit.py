@@ -144,9 +144,11 @@ class DiffusionTransformer(nn.Module):
         exit_layer_ix=None,
         **kwargs):
         
-        # [NEW] Extract Spatial Parameters from Keywords
+        # [NEW] Extract Spatial Parameters and cleanup potential shadowed keys from Keywords
         spatial_trajectories = kwargs.pop("spatial_trajectories", None)
         track_times = kwargs.pop("track_times", None)
+        kwargs.pop("context", None) # Remove potential shadowed text conditioning
+        kwargs.pop("cross_attn_cond", None) # Remove potential shadowed cross_attn_cond
         
         _tsm_info = None
 
@@ -170,6 +172,13 @@ class DiffusionTransformer(nn.Module):
                      K_traj = spatial_trajectories.shape[1]
                      L_traj = spatial_trajectories.shape[2]
                 
+                # [NEW] Robust CFG Doubling: Handle cases where model.forward() doubled the batch for CFG 
+                # but trajectories from kwargs are still at original batch size.
+                if cross_attn_cond.shape[0] == 2 * spatial_trajectories.shape[0]:
+                    spatial_trajectories = torch.cat([spatial_trajectories, spatial_trajectories], dim=0)
+                    if track_times is not None and track_times.shape[0] == spatial_trajectories.shape[0] // 2:
+                        track_times = torch.cat([track_times, track_times], dim=0)
+
                 # Active Slicing & Linear Interpolation & Padding Engine
                 T_audio = x.shape[1]
                 audio_len = 8.0 # Standard Phase2 sample duration
@@ -439,7 +448,11 @@ class DiffusionTransformer(nn.Module):
              _tsm_info["K_len_text"] = K_len_text
 
         if self.transformer_type == "continuous_transformer":
-            # Masks not currently implemented for continuous transformer
+            # [NEW] If we are using cross_attn_bias, we should set cross_attn_cond_mask to None 
+            # to avoid length mismatch issues with the original text-only mask.
+            if cross_attn_bias is not None:
+                cross_attn_cond_mask = None
+                
             output = self.transformer(x, prepend_embeds=prepend_inputs, context=cross_attn_cond, return_info=return_info, exit_layer_ix=exit_layer_ix, cross_attn_bias=cross_attn_bias, **extra_args, **kwargs)
 
             if return_info:

@@ -809,6 +809,7 @@ class ContinuousTransformer(nn.Module):
         use_checkpointing = True,
         exit_layer_ix = None,
         cross_attn_bias = None,
+        context = None,
         **kwargs
     ):
         batch, seq, device = *x.shape[:2], x.device
@@ -846,9 +847,9 @@ class ContinuousTransformer(nn.Module):
 
         # Iterate over the transformer layers
         for layer_ix, layer in enumerate(self.layers):
-
+            
             if use_checkpointing:
-                x = checkpoint(layer, x, rotary_pos_emb = rotary_pos_emb, global_cond=global_cond, self_attention_flash_sliding_window = self.sliding_window, cross_attn_bias=cross_attn_bias, **kwargs)
+                x = checkpoint(layer, x, context=context, rotary_pos_emb = rotary_pos_emb, global_cond=global_cond, self_attention_flash_sliding_window = self.sliding_window, cross_attn_bias=cross_attn_bias, **kwargs)
             else:
                 x = layer(x, rotary_pos_emb = rotary_pos_emb, global_cond=global_cond, self_attention_flash_sliding_window = self.sliding_window, cross_attn_bias=cross_attn_bias, **kwargs)
 
