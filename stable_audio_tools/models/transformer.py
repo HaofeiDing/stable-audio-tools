@@ -849,9 +849,9 @@ class ContinuousTransformer(nn.Module):
         for layer_ix, layer in enumerate(self.layers):
             
             if use_checkpointing:
-                x = checkpoint(layer, x, context=context, rotary_pos_emb = rotary_pos_emb, global_cond=global_cond, self_attention_flash_sliding_window = self.sliding_window, cross_attn_bias=cross_attn_bias, **kwargs)
+                x = checkpoint(layer, x, context, rotary_pos_emb, global_cond, self.sliding_window, None, cross_attn_bias, **kwargs)
             else:
-                x = layer(x, rotary_pos_emb = rotary_pos_emb, global_cond=global_cond, self_attention_flash_sliding_window = self.sliding_window, cross_attn_bias=cross_attn_bias, **kwargs)
+                x = layer(x, context=context, rotary_pos_emb = rotary_pos_emb, global_cond=global_cond, self_attention_flash_sliding_window = self.sliding_window, cross_attn_bias=cross_attn_bias, **kwargs)
 
             if return_info:
                 info["hidden_states"].append(x)

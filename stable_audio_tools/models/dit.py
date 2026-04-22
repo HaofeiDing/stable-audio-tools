@@ -453,6 +453,12 @@ class DiffusionTransformer(nn.Module):
             if cross_attn_bias is not None:
                 cross_attn_cond_mask = None
                 
+            # [DEBUG] Verify shapes right before transformer call to confirm concatenation
+            if cross_attn_cond is not None and cross_attn_bias is not None:
+                if cross_attn_cond.shape[1] != cross_attn_bias.shape[3]:
+                    # This will catch the error early with explicit shape info in the traceback
+                    raise RuntimeError(f"Shape mismatch before transformer: context={cross_attn_cond.shape}, bias={cross_attn_bias.shape}")
+                
             output = self.transformer(x, prepend_embeds=prepend_inputs, context=cross_attn_cond, return_info=return_info, exit_layer_ix=exit_layer_ix, cross_attn_bias=cross_attn_bias, **extra_args, **kwargs)
 
             if return_info:
