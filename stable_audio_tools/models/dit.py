@@ -151,123 +151,44 @@ class DiffusionTransformer(nn.Module):
         kwargs.pop("cross_attn_cond", None) # Remove potential shadowed cross_attn_cond
         
         _tsm_info = None
-        final_cross_attn_cond = None
 
+        # Phase 1: Project text conditioning (does NOT depend on T_audio)
         if cross_attn_cond is not None:
             B = cross_attn_cond.shape[0]
-            # Convert text semantics to 1536 implicitly expected by Transformer
-            cross_attn_cond = self.to_cond_embed(cross_attn_cond) # [B, K_text*L_text, 1536]
-            final_cross_attn_cond = cross_attn_cond
-            
-            # [NEW] Robust Track Detection
+            cross_attn_cond = self.to_cond_embed(cross_attn_cond) # [B, K_len_text, cond_embed_dim]
             K_len_text = cross_attn_cond.shape[1]
             L_text = 128
-            # K_text calculation should account for potential prepended/extra tokens
             K_text = (K_len_text + L_text - 1) // L_text
-            
-            if spatial_trajectories is not None:
-                if spatial_trajectories.dim() == 3:
-                     K_traj = 1
-                     L_traj = spatial_trajectories.shape[1]
-                     spatial_trajectories = spatial_trajectories.unsqueeze(1)
-                else:
-                     K_traj = spatial_trajectories.shape[1]
-                     L_traj = spatial_trajectories.shape[2]
-                
-                # [NEW] Robust CFG Doubling: Handle cases where model.forward() doubled the batch for CFG 
-                # but trajectories from kwargs are still at original batch size.
-                if cross_attn_cond.shape[0] == 2 * spatial_trajectories.shape[0]:
-                    spatial_trajectories = torch.cat([spatial_trajectories, spatial_trajectories], dim=0)
-                    if track_times is not None and track_times.shape[0] == spatial_trajectories.shape[0] // 2:
-                        track_times = torch.cat([track_times, track_times], dim=0)
+        else:
+            B = x.shape[0]
+            K_len_text = 0
 
-                # Active Slicing & Linear Interpolation & Padding Engine
-                T_audio = x.shape[1]
-                audio_len = 8.0 # Standard Phase2 sample duration
-                
-                # Check for dropped tracks or diffuse backgrounds before reshaping
-                is_diffuse = (spatial_trajectories.abs().sum(dim=(2, 3)) < 1e-6) # [B, K_traj]
-                
-                if L_traj == 0:
-                    spatial_trajectories = cross_attn_cond.new_zeros(B, K_traj, T_audio, cross_attn_cond.shape[-1])
-                else:
-                    traj_dtype = spatial_trajectories.dtype
-                    device = spatial_trajectories.device
-
-                    start_times = spatial_trajectories.new_zeros(B, K_traj)
-                    end_times = spatial_trajectories.new_full((B, K_traj), audio_len)
-                    if track_times is not None:
-                        num_timed_tracks = min(K_traj, track_times.shape[1])
-                        if num_timed_tracks > 0:
-                            track_times = track_times.to(device=device, dtype=traj_dtype)
-                            start_times[:, :num_timed_tracks] = track_times[:, :num_timed_tracks, 0]
-                            end_times[:, :num_timed_tracks] = track_times[:, :num_timed_tracks, 1]
-
-                    start_times = start_times.reshape(-1)
-                    end_times = end_times.reshape(-1)
-
-                    audio_scale = T_audio / audio_len
-                    raw_scale = L_traj / audio_len
-
-                    start_ta = torch.trunc(start_times * audio_scale).to(torch.long).clamp_(0, T_audio)
-                    end_ta = torch.trunc(end_times * audio_scale).to(torch.long).clamp_(0, T_audio)
-                    t_active = (end_ta - start_ta).clamp_min_(1)
-
-                    start_raw = torch.trunc(start_times * raw_scale).to(torch.long).clamp_(0, L_traj)
-                    end_raw = torch.trunc(end_times * raw_scale).to(torch.long).clamp_(0, L_traj)
-                    raw_len = (end_raw - start_raw).clamp_min_(1)
-                    start_raw = start_raw.clamp_max_(L_traj - 1)
-
-                    flat_trajs = spatial_trajectories.reshape(B * K_traj, L_traj, -1)
-                    audio_positions = torch.arange(T_audio, device=device)
-                    rel_positions = audio_positions.unsqueeze(0) - start_ta.unsqueeze(1)
-                    active_mask = (rel_positions >= 0) & (rel_positions < t_active.unsqueeze(1))
-
-                    spatial_trajectories = cross_attn_cond.new_zeros(B * K_traj, T_audio, cross_attn_cond.shape[-1])
-                    track_idx, out_idx = active_mask.nonzero(as_tuple=True)
-
-                    if track_idx.numel() > 0:
-                        rel_positions = rel_positions[track_idx, out_idx].to(traj_dtype)
-                        raw_len_active = raw_len[track_idx]
-                        t_active_float = t_active[track_idx].to(traj_dtype)
-
-                        source_pos = (rel_positions + 0.5) * raw_len_active.to(traj_dtype) / t_active_float - 0.5
-                        left_unclamped = torch.floor(source_pos).to(torch.long)
-                        weight = (source_pos - left_unclamped.to(traj_dtype)).unsqueeze(-1)
-
-                        max_rel = raw_len_active - 1
-                        zeros = torch.zeros_like(left_unclamped)
-                        left = torch.minimum(torch.maximum(left_unclamped, zeros), max_rel)
-                        right = torch.minimum(torch.maximum(left_unclamped + 1, zeros), max_rel)
-
-                        raw_base = start_raw[track_idx]
-                        left_vals = flat_trajs[track_idx, raw_base + left]
-                        right_vals = flat_trajs[track_idx, raw_base + right]
-                        active_traj = torch.lerp(left_vals, right_vals, weight)
-
-                        active_traj_embed = self.traj_to_cond_embed(active_traj)
-                        spatial_trajectories[track_idx, out_idx] = active_traj_embed.to(spatial_trajectories.dtype)
-
-                    spatial_trajectories = spatial_trajectories.reshape(B, K_traj, T_audio, -1)
-                
-                # Flatten spatial_trajectories to [B, K_traj * T_audio, 1536]
-                spatial_trajectories_flat = spatial_trajectories.view(B, K_traj * T_audio, -1)
-                
-                # Decoupled sequence concatenation (concatenate along Sequence dimension)
-                final_cross_attn_cond = torch.cat([cross_attn_cond, spatial_trajectories_flat], dim=1)
-                
-                _tsm_info = {
-                    "K_text": K_text,
-                    "L_text": L_text,
-                    "K_traj": K_traj,
-                    "L_traj": T_audio, # Reassigned as T_audio correctly!
-                    "track_times": track_times
-                }
+        # Phase 2: Detect spatial trajectory metadata (save for later, after rearrange)
+        _spatial_meta = None
+        if cross_attn_cond is not None and spatial_trajectories is not None:
+            if spatial_trajectories.dim() == 3:
+                K_traj = 1
+                L_traj = spatial_trajectories.shape[1]
+                spatial_trajectories = spatial_trajectories.unsqueeze(1)
             else:
-                _tsm_info = None
-        
-        # Ensure cross_attn_cond is updated for the rest of _forward
-        cross_attn_cond = final_cross_attn_cond
+                K_traj = spatial_trajectories.shape[1]
+                L_traj = spatial_trajectories.shape[2]
+            
+            # Robust CFG Doubling
+            if cross_attn_cond.shape[0] == 2 * spatial_trajectories.shape[0]:
+                spatial_trajectories = torch.cat([spatial_trajectories, spatial_trajectories], dim=0)
+                if track_times is not None and track_times.shape[0] == spatial_trajectories.shape[0] // 2:
+                    track_times = torch.cat([track_times, track_times], dim=0)
+            
+            is_diffuse = (spatial_trajectories.abs().sum(dim=(2, 3)) < 1e-6) # [B, K_traj]
+            
+            _spatial_meta = {
+                "spatial_trajectories": spatial_trajectories,
+                "track_times": track_times,
+                "K_traj": K_traj,
+                "L_traj": L_traj,
+                "is_diffuse": is_diffuse,
+            }
 
         if global_embed is not None:
             # Project the global conditioning to the embedding dimension
@@ -331,6 +252,98 @@ class DiffusionTransformer(nn.Module):
         if self.patch_size > 1:
             x = rearrange(x, "b (t p) c -> b t (c p)", p=self.patch_size)
 
+        # ============================================================
+        # Phase 3: Spatial Trajectory Interpolation & Context Concatenation
+        # MUST happen AFTER rearrange so x.shape[1] = T (time), not C (channels)
+        # ============================================================
+        cross_attn_bias = None  # Default: no spatial bias
+        
+        if _spatial_meta is not None and cross_attn_cond is not None:
+            spatial_trajectories = _spatial_meta["spatial_trajectories"]
+            track_times = _spatial_meta["track_times"]
+            K_traj = _spatial_meta["K_traj"]
+            L_traj = _spatial_meta["L_traj"]
+            is_diffuse = _spatial_meta["is_diffuse"]
+            
+            T_audio = x.shape[1]  # NOW CORRECT: x is [B, T, C] after rearrange
+            audio_len = 8.0
+            
+            if L_traj == 0:
+                spatial_trajectories = cross_attn_cond.new_zeros(B, K_traj, T_audio, cross_attn_cond.shape[-1])
+            else:
+                traj_dtype = spatial_trajectories.dtype
+                device = spatial_trajectories.device
+
+                start_times = spatial_trajectories.new_zeros(B, K_traj)
+                end_times = spatial_trajectories.new_full((B, K_traj), audio_len)
+                if track_times is not None:
+                    num_timed_tracks = min(K_traj, track_times.shape[1])
+                    if num_timed_tracks > 0:
+                        track_times = track_times.to(device=device, dtype=traj_dtype)
+                        start_times[:, :num_timed_tracks] = track_times[:, :num_timed_tracks, 0]
+                        end_times[:, :num_timed_tracks] = track_times[:, :num_timed_tracks, 1]
+
+                start_times = start_times.reshape(-1)
+                end_times = end_times.reshape(-1)
+
+                audio_scale = T_audio / audio_len
+                raw_scale = L_traj / audio_len
+
+                start_ta = torch.trunc(start_times * audio_scale).to(torch.long).clamp_(0, T_audio)
+                end_ta = torch.trunc(end_times * audio_scale).to(torch.long).clamp_(0, T_audio)
+                t_active = (end_ta - start_ta).clamp_min_(1)
+
+                start_raw = torch.trunc(start_times * raw_scale).to(torch.long).clamp_(0, L_traj)
+                end_raw = torch.trunc(end_times * raw_scale).to(torch.long).clamp_(0, L_traj)
+                raw_len = (end_raw - start_raw).clamp_min_(1)
+                start_raw = start_raw.clamp_max_(L_traj - 1)
+
+                flat_trajs = spatial_trajectories.reshape(B * K_traj, L_traj, -1)
+                audio_positions = torch.arange(T_audio, device=device)
+                rel_positions = audio_positions.unsqueeze(0) - start_ta.unsqueeze(1)
+                active_mask = (rel_positions >= 0) & (rel_positions < t_active.unsqueeze(1))
+
+                spatial_trajectories = cross_attn_cond.new_zeros(B * K_traj, T_audio, cross_attn_cond.shape[-1])
+                track_idx, out_idx = active_mask.nonzero(as_tuple=True)
+
+                if track_idx.numel() > 0:
+                    rel_positions = rel_positions[track_idx, out_idx].to(traj_dtype)
+                    raw_len_active = raw_len[track_idx]
+                    t_active_float = t_active[track_idx].to(traj_dtype)
+
+                    source_pos = (rel_positions + 0.5) * raw_len_active.to(traj_dtype) / t_active_float - 0.5
+                    left_unclamped = torch.floor(source_pos).to(torch.long)
+                    weight = (source_pos - left_unclamped.to(traj_dtype)).unsqueeze(-1)
+
+                    max_rel = raw_len_active - 1
+                    zeros = torch.zeros_like(left_unclamped)
+                    left = torch.minimum(torch.maximum(left_unclamped, zeros), max_rel)
+                    right = torch.minimum(torch.maximum(left_unclamped + 1, zeros), max_rel)
+
+                    raw_base = start_raw[track_idx]
+                    left_vals = flat_trajs[track_idx, raw_base + left]
+                    right_vals = flat_trajs[track_idx, raw_base + right]
+                    active_traj = torch.lerp(left_vals, right_vals, weight)
+
+                    active_traj_embed = self.traj_to_cond_embed(active_traj)
+                    spatial_trajectories[track_idx, out_idx] = active_traj_embed.to(spatial_trajectories.dtype)
+
+                spatial_trajectories = spatial_trajectories.reshape(B, K_traj, T_audio, -1)
+            
+            # Flatten and concatenate with text conditioning
+            spatial_trajectories_flat = spatial_trajectories.view(B, K_traj * T_audio, -1)
+            cross_attn_cond = torch.cat([cross_attn_cond, spatial_trajectories_flat], dim=1)
+            
+            _tsm_info = {
+                "K_text": K_text,
+                "L_text": L_text,
+                "K_traj": K_traj,
+                "L_traj": T_audio,
+                "track_times": track_times,
+                "K_len_text": K_len_text,
+                "is_diffuse": is_diffuse,
+            }
+
         # Build TSM Attention Bias mask since we now know T_q
         if _tsm_info is not None:
             K_text = _tsm_info["K_text"]
@@ -338,6 +351,7 @@ class DiffusionTransformer(nn.Module):
             K_traj = _tsm_info["K_traj"]
             L_traj = _tsm_info["L_traj"]
             track_times = _tsm_info["track_times"]
+            is_diffuse = _tsm_info["is_diffuse"]
             
             device, dtype = x.device, x.dtype
             T_audio = x.shape[1]
@@ -448,21 +462,10 @@ class DiffusionTransformer(nn.Module):
             
             cross_attn_bias = full_mask.unsqueeze(1) # [B, 1, T_q, K_len]
         
-        # [NEW] Add K_len_text to _tsm_info for mask consistency
-        if _tsm_info is not None:
-             _tsm_info["K_len_text"] = K_len_text
-
         if self.transformer_type == "continuous_transformer":
-            # [NEW] If we are using cross_attn_bias, we should set cross_attn_cond_mask to None 
-            # to avoid length mismatch issues with the original text-only mask.
+            # If we are using cross_attn_bias, disable the original text-only mask
             if cross_attn_bias is not None:
                 cross_attn_cond_mask = None
-                
-            # [DEBUG] Verify shapes right before transformer call to confirm concatenation
-            if cross_attn_cond is not None and cross_attn_bias is not None:
-                if cross_attn_cond.shape[1] != cross_attn_bias.shape[3]:
-                    # This will catch the error early with explicit shape info in the traceback
-                    raise RuntimeError(f"Shape mismatch before transformer: context={cross_attn_cond.shape}, bias={cross_attn_bias.shape}")
                 
             output = self.transformer(x, prepend_embeds=prepend_inputs, context=cross_attn_cond, return_info=return_info, exit_layer_ix=exit_layer_ix, cross_attn_bias=cross_attn_bias, **extra_args, **kwargs)
 
@@ -512,6 +515,9 @@ class DiffusionTransformer(nn.Module):
         **kwargs):
 
         assert causal == False, "Causal mode is not supported for DiffusionTransformer"
+
+        # Prevent any downstream shadowing of 'context' via kwargs
+        kwargs.pop("context", None)
 
         model_dtype = next(self.parameters()).dtype
         
