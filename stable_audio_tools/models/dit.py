@@ -151,11 +151,13 @@ class DiffusionTransformer(nn.Module):
         kwargs.pop("cross_attn_cond", None) # Remove potential shadowed cross_attn_cond
         
         _tsm_info = None
+        final_cross_attn_cond = None
 
         if cross_attn_cond is not None:
             B = cross_attn_cond.shape[0]
             # Convert text semantics to 1536 implicitly expected by Transformer
             cross_attn_cond = self.to_cond_embed(cross_attn_cond) # [B, K_text*L_text, 1536]
+            final_cross_attn_cond = cross_attn_cond
             
             # [NEW] Robust Track Detection
             K_len_text = cross_attn_cond.shape[1]
@@ -252,7 +254,7 @@ class DiffusionTransformer(nn.Module):
                 spatial_trajectories_flat = spatial_trajectories.view(B, K_traj * T_audio, -1)
                 
                 # Decoupled sequence concatenation (concatenate along Sequence dimension)
-                cross_attn_cond = torch.cat([cross_attn_cond, spatial_trajectories_flat], dim=1)
+                final_cross_attn_cond = torch.cat([cross_attn_cond, spatial_trajectories_flat], dim=1)
                 
                 _tsm_info = {
                     "K_text": K_text,
@@ -263,6 +265,9 @@ class DiffusionTransformer(nn.Module):
                 }
             else:
                 _tsm_info = None
+        
+        # Ensure cross_attn_cond is updated for the rest of _forward
+        cross_attn_cond = final_cross_attn_cond
 
         if global_embed is not None:
             # Project the global conditioning to the embedding dimension
